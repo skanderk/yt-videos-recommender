@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 # ------------------------ Recommender configs ------------------------
 LIKED_VIDEOS_TO_PULL = 1000  # The maximum number of liked videos to pull from YT. Used to make recommendations.
-MAX_YT_SEARCH_RESULTS = 10  # The maximum number of videos to return in a YT search. Increase for more diversity.
+MAX_YT_SEARCH_RESULTS = 5  # The maximum number of videos to return in a YT search. Increase for more diversity.
 TOPIC_SAMPLE_SIZE = 5  # The maximum number of video topics to be recommended.
 VIDEO_SAMPLE_SIZE = 3  # The maximum number of videos to be sampled from each topic to generate search queries.
 RECOMMENDATIONS_COUNT = 10  # The maximum number of videos to recommend per run. NB. Inserting a video a playlist costs 50 pts.
@@ -598,7 +598,7 @@ def run_recommendation_workflow(
 
         recommendations_playlist = os.environ["YT_RECOMMENDATIONS_PLAYLIST_ID"]
         prev_rcommended_vids = fetch_playlist_items(
-            recommendations_playlist, 200, yt_client, logger
+            recommendations_playlist, 100, yt_client, logger
         )
 
         recommendations = select_recommended_videos(
