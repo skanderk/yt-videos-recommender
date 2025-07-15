@@ -40,14 +40,84 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource as YouTubeClient
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
-# ------------------------ Recommender configs ------------------------
-LIKED_VIDEOS_TO_PULL = 1000  # The maximum number of liked videos to pull from YT. Used to make recommendations.
-MAX_YT_SEARCH_RESULTS = 15  # The maximum number of videos to return in a YT search. Increase for more diversity.
-TOPIC_SAMPLE_SIZE = 5  # The maximum number of video topics to be recommended.
-VIDEO_SAMPLE_SIZE = 3  # The maximum number of videos to be sampled from each topic to generate search queries.
-RECOMMENDATIONS_COUNT = 5  # The maximum number of videos to recommend per run. NB. Inserting a video a playlist costs 50 pts.
+
+class RecommenderSettings(BaseSettings):
+    """
+    Settings of the YouTube videos recommender. Customize per your needs and likings.
+    """
+
+    num_topics: int = Field(
+        default=10,
+        gt=1,
+        lt=20,
+        title="The maximum number of videos to return in a YT search. Increase for more diversity.",
+    )
+
+    num_videos_topic: int = Field(
+        default=2,
+        gt=1,
+        lt=10,
+        title="The maximum number of videos to be sampled from each topic to generate search queries.",
+    )
+
+    num_recommendations: int = Field(
+        default_factory=lambda data: data["num_topics"] * data["num_videos_topic"],
+        gt=1,
+        lt=50,
+        title="The maximum number of videos to recommend per run. NB. Inserting a video a playlist costs 50 pts.",
+    )
+
+    num_liked_videos: int = Field(
+        default=2000,
+        gt=0,
+        lt=500000,
+        title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
+    )
+
+    num_yt_search_results: int = Field(
+        default=15,
+        gt=2,
+        le=50,
+        title="The maximum number of videos to return in a YT search. Increase for more diversity.",
+    )
+
+    target_languages: list[str] = Field(
+        default=["english", "french"], title="Languages of recommended videos"
+    )
+
+    default_topics: list[str] = Field(
+        default=[
+            "Business",
+            "Food",
+            "Gaming",
+            "Health",
+            "Movies",
+            "Music",
+            "Pets",
+            "Philosophy",
+            "Politics",
+            "Religion",
+            "Science",
+            "Mathematics",
+            "Physics",
+            "Sports",
+            "Technology",
+            "AI",
+            "Programming",
+            "Tourism",
+            "Tv Shows",
+            "Vehicles",
+            "News",
+        ],
+        title="""Customize to your preferred topics, if required.
+        Some of these topics were inspired by : https://developers.google.com/youtube/v3/docs/search/list
+        The Recommender is multilingual, though English is internally used as the Lingua Franka for topic names.
+""",
+    )
+
 
 # ------------------------ YouTube API Scopes read/write permissions required by recommender ------------------------
 OAUTH_SECRETS_FILE = "oauth.json"  # File exported from Google console.
@@ -64,28 +134,6 @@ YT_API_SCOPES = [
 # ------------------------ Google GenAI configs ------------------------
 LLM = "gemini-2.0-flash"
 
-# --> Customize to your preferred topics, if required.
-# Some of these topics were inspired by : https://developers.google.com/youtube/v3/docs/search/list
-# The Recommender is multilingual, though English is internally used as the Lingua Franka for topic names.
-DEFAULT_VIDEO_TOPICS = [
-    "Business",
-    "Food",
-    "Gaming",
-    "Health",
-    "Movies",
-    "Music",
-    "Pets",
-    "Philosophy",
-    "Politics",
-    "Religion",
-    "Science",
-    "Sports",
-    "Technology",
-    "Tourism",
-    "Tv Shows",
-    "Vehicles",
-]
-
 
 CLASSIFY_VIDEOS_SYS_PROMPT = """
 You are a video content classifier. 
@@ -100,16 +148,16 @@ Classify each of the following titles into *one and only one* topic.
 Video titles:
 {video_titles}  # batch titles in groups
 
-Pick up the topics from the following list. Create a new topic if it is *necessary* and only if it is necessary.
+Pick up the topics from  list DEFAULT_TOPICS if you find a topic in this list that describes accurately the video. 
+Create a new topic if you are not able to find a precise topic in DEFAULT_TOPICS.
+Do not create new topics unless necessary.
 
-topics:
+DEFAULT_TOPICS:
 {topics} # topic names
 """
 
 CLASSIFY_VIDEOS_BATCH_SIZE = 20
 
-# --> Customize to your preferred languages.
-SEARCH_TARGET_LANGUAGES = ["english", "french"]
 
 GEN_SEARCH_QUERY_SYS_PROMPT = """You are a creative search queries generator.
 You receive a list of YouTube Videos all of the same topic and return a search query that allows to retrieve videos 
@@ -306,7 +354,7 @@ class VideoTopics(BaseModel):
 
 
 def classify_videos(
-    videos: List[dict], llm_client: LLMClient, logger: Logger
+    videos: List[dict], llm_client: LLMClient, default_topics: List[str], logger: Logger
 ) -> VideoTopics:
     """
     Classifies videos based on their titles into semantic topics using an LLM.
@@ -320,7 +368,7 @@ def classify_videos(
 
     video_titles = [v["snippet"]["title"] for v in videos]
 
-    topic_pool: set[str] = set(DEFAULT_VIDEO_TOPICS)
+    topic_pool: set[str] = set(default_topics)
     gencontent_config = GenerateContentConfig(
         system_instruction=CLASSIFY_VIDEOS_SYS_PROMPT,
         temperature=0,
@@ -572,25 +620,30 @@ def add_to_recommendation_playlist(
 
 
 def run_recommendation_workflow(
-    yt_client: YouTubeClient, llm_client: LLMClient, logger: Logger
+    yt_client: YouTubeClient,
+    llm_client: LLMClient,
+    settings: RecommenderSettings,
+    logger: Logger,
 ) -> None:
     """
     Runs the full video recommendation workflow.
     """
     try:
-        videos = fetch_liked_videos(LIKED_VIDEOS_TO_PULL, yt_client, logger)
+        videos = fetch_liked_videos(settings.num_liked_videos, yt_client, logger)
         random.shuffle(
             videos
         )  # Shuffle to avoid have similar videos next to each other in collection.
 
-        topic_buckets = build_topic_buckets(videos, llm_client, logger)
+        topic_buckets = build_topic_buckets(
+            videos, llm_client, settings.default_topics, logger
+        )
 
         sampled_videos = sample_bucket_videos(
-            topic_buckets, TOPIC_SAMPLE_SIZE, VIDEO_SAMPLE_SIZE, logger
+            topic_buckets, settings.num_topics, settings.num_videos_topic, logger
         )
 
         search_queries = generate_search_queries(
-            sampled_videos, SEARCH_TARGET_LANGUAGES, llm_client, logger
+            sampled_videos, settings.target_languages, llm_client, logger
         )
         logger.debug(search_queries)
 
@@ -602,7 +655,10 @@ def run_recommendation_workflow(
         )
 
         recommendations = select_recommended_videos(
-            result_vids_by_topic, prev_rcommended_vids, RECOMMENDATIONS_COUNT, logger
+            result_vids_by_topic,
+            prev_rcommended_vids,
+            settings.num_recommendations,
+            logger,
         )
 
         add_to_recommendation_playlist(
@@ -614,7 +670,7 @@ def run_recommendation_workflow(
 
         delete_old_llm_videos(
             prev_rcommended_vids,
-            5 * RECOMMENDATIONS_COUNT,
+            5 * settings.num_recommendations,
             yt_client,
             logger,
         )
@@ -624,9 +680,9 @@ def run_recommendation_workflow(
 
 
 def build_topic_buckets(
-    videos: List[Dict], llm_client: LLMClient, logger: Logger
+    videos: List[Dict], llm_client: LLMClient, video_topics: List[str], logger: Logger
 ) -> Dict[str, List[str]]:
-    titles_by_topic = classify_videos(videos, llm_client, logger)
+    titles_by_topic = classify_videos(videos, llm_client, video_topics, logger)
     logger.debug(titles_by_topic.model_dump_json())
 
     return create_topic_buckets(videos, titles_by_topic)
@@ -680,11 +736,11 @@ def search_topic_videos(
 def main() -> None:
     """Drives the end-to-end YouTube recommendation job."""
 
-    clock_start, logger = setup()
+    settings, clock_start, logger = setup()
     logger.info("--> Started making YouTube video recommendations ...")
 
     youtube_client, llm_client = create_clients()
-    run_recommendation_workflow(youtube_client, llm_client, logger)
+    run_recommendation_workflow(youtube_client, llm_client, settings, logger)
 
     # Finalizing
     run_time_secs = perf_counter() - clock_start
@@ -693,20 +749,22 @@ def main() -> None:
     )
 
 
-def setup() -> Tuple[float, Logger]:
+def setup() -> Tuple[RecommenderSettings, float, Logger]:
     """
     Setup chores: creates a logger, loads env. variables...
 
     Returns
     -------
+        * Settings of the recommendation system.
         * Clock start time.
         * A configured logger.
     """
+    recommender_settings = RecommenderSettings()
     clock_start = perf_counter()
     logger = create_logger()
     load_environment(logger)
 
-    return clock_start, logger
+    return recommender_settings, clock_start, logger
 
 
 def create_logger():
