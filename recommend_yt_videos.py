@@ -57,8 +57,8 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_videos_topic: int = Field(
-        default=2,
-        gt=1,
+        default=1,
+        gt=0,
         lt=10,
         title="The maximum number of videos to be sampled from each topic to generate search queries.",
     )
@@ -71,7 +71,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_liked_videos: int = Field(
-        default=1000,
+        default=200,
         gt=0,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
@@ -132,7 +132,7 @@ YT_API_SCOPES = [
 ]
 
 # ------------------------ Google GenAI configs ------------------------
-LLM = "gemini-2.0-flash"
+LLM = "gemini-2.5-flash"
 
 
 CLASSIFY_VIDEOS_SYS_PROMPT = """
@@ -156,7 +156,9 @@ DEFAULT_TOPICS:
 {topics} # topic names
 """
 
-CLASSIFY_VIDEOS_BATCH_SIZE = 20
+CLASSIFY_VIDEOS_BATCH_SIZE = (
+    50  # Number of video titles to classify in a single LLM call.
+)
 
 
 GEN_SEARCH_QUERY_SYS_PROMPT = """You are a creative search queries generator.
@@ -224,7 +226,7 @@ def create_llm_client() -> LLMClient:
     """
     Returns an initialized LLM client.
     """
-    return genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+    return genai.Client(api_key=os.environ["GOOGLE_API_KEY"], vertexai=False, http_options={'api_version': 'v1alpha'})
 
 
 def fetch_playlist_items(
@@ -388,6 +390,8 @@ def classify_videos(
         prompt = CLASSIFY_VIDEOS_USER_PROMPT.format(
             video_titles=video_titles[start_idx:end_idx], topics=sorted(topic_pool)
         )
+
+        logger.debug(f"Prompt sent to LLM: {prompt}")
 
         response = llm_client.models.generate_content(
             model=LLM,
