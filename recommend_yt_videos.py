@@ -50,7 +50,7 @@ class RecommenderSettings(BaseSettings):
     """
 
     num_topics: int = Field(
-        default=10,
+        default=5,
         gt=1,
         lt=20,
         title="The maximum number of videos to return in a YT search. Increase for more diversity.",
@@ -71,7 +71,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_liked_videos: int = Field(
-        default=2000,
+        default=1000,
         gt=0,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
