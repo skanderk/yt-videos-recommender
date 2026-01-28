@@ -29,7 +29,6 @@ from time import perf_counter, sleep
 from typing import Any, Dict, List, Tuple, Set, Sequence
 
 import dotenv
-from google.genai import Client as LLMClient
 from googleapiclient.discovery import Resource as YouTubeClient
 from pydantic import  Field
 from pydantic_settings import BaseSettings
@@ -61,10 +60,10 @@ class RecommenderSettings(BaseSettings):
     """
 
     num_topics: int = Field(
-        default=5,
+        default=10,
         gt=1,
         lt=20,
-        title="The maximum number of videos to return in a YT search. Increase for more diversity.",
+        title="The maximum number of topics to sample. Increase for more diversity.",
     )
 
     num_videos_topic: int = Field(
@@ -82,8 +81,8 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_liked_videos: int = Field(
-        default=200,
-        gt=0,
+        default=100,
+        gt=1,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
     )
@@ -96,7 +95,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     target_languages: list[str] = Field(
-        default=["english", "french"], title="Languages of recommended videos"
+        default=["english", "french", "arabic"], title="Languages of recommended videos"
     )
 
     default_topics: list[str] = Field(
@@ -133,7 +132,7 @@ class RecommenderSettings(BaseSettings):
 
 # ------------------------ Misc configs ------------------------
 LOG_FILE = None  # Log file path. Set to None to log to console.
-TWEEKING = False  # Set to True to log messages useful for tweeking the recommender.
+TWEEKING = True  # Set to True to log messages useful for tweeking the recommender.
 
 
 # ------------------------ Recommender functions ------------------------
@@ -238,7 +237,7 @@ def delete_tabu_videos(videos: List[Dict], tabu_channels: Set[str]) -> List[Dict
 
 def run_recommendation_workflow(
     yt_client: YouTubeClient,
-    llm_client: LLMClient,
+    llm_client: Any,
     settings: RecommenderSettings,
     logger: Logger,
 ) -> None:
@@ -255,6 +254,7 @@ def run_recommendation_workflow(
             videos, llm_client, settings.default_topics, logger
         )
 
+    
         sampled_videos = sample_bucket_videos(
             topic_buckets, settings.num_topics, settings.num_videos_topic, logger
         )
@@ -297,7 +297,7 @@ def run_recommendation_workflow(
 
 
 def build_topic_buckets(
-    videos: List[Dict], llm_client: LLMClient, video_topics: List[str], logger: Logger
+    videos: List[Dict], llm_client: Any, video_topics: List[str], logger: Logger
 ) -> Dict[str, List[str]]:
     titles_by_topic = classify_videos(videos, llm_client, video_topics, logger)
     logger.debug(titles_by_topic.model_dump_json())
@@ -323,7 +323,7 @@ def sample_bucket_videos(
 def generate_search_queries(
     videos_by_topic: Dict[str, List[Dict]],
     target_languages: List[str],
-    llm_client: LLMClient,
+    llm_client: Any,
     logger: Logger,
 ) -> Dict[str, str]:
     search_queries: Dict[str, str] = {}
@@ -438,7 +438,7 @@ def load_environment(logger: Logger):
         exit(-1)
 
 
-def create_clients() -> Tuple[YouTubeClient, LLMClient]:
+def create_clients() -> Tuple[YouTubeClient, Any]:
     """
     Authenticates to YouTube and creates API clients
     """

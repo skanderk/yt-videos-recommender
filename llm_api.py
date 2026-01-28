@@ -10,16 +10,16 @@ import math
 import os
 from logging import Logger
 from time import sleep
-from typing import Dict, List
+from typing import Any, Dict, List
 
-from google import genai
-from google.genai import Client as LLMClient
-from google.genai.types import GenerateContentConfig
+from groq import Groq
 from pydantic import BaseModel
 
 
 # LLM model configuration
-LLM = "gemini-2.5-flash"
+LLM = "openai/gpt-oss-120b"  # Groq model to use for all LLM calls
+
+POLITENESS_DELAY_SEC = 10  # Delay between LLM calls to avoid rate limits
 
 # LLM prompts for video classification
 CLASSIFY_VIDEOS_SYS_PROMPT = """
@@ -43,7 +43,9 @@ DEFAULT_TOPICS:
 {topics} # topic names
 """
 
-CLASSIFY_VIDEOS_BATCH_SIZE = 50  # Number of video titles to classify in a single LLM call.
+CLASSIFY_VIDEOS_BATCH_SIZE = (
+    5  # Number of video titles to classify in a single LLM call.
+)
 
 # LLM prompts for search query generation
 GEN_SEARCH_QUERY_SYS_PROMPT = """You are a creative search queries generator.
@@ -70,6 +72,7 @@ languages:
 """
 
 
+# ------------------------ LLM response schema ------------------------
 class Topic(BaseModel):
     """A single topic grouping a list of YouTube video titles."""
 
@@ -118,107 +121,127 @@ class VideoTopics(BaseModel):
         return VideoTopics.from_dict(merged)
 
 
-def create_llm_client() -> LLMClient:
+# ------------------------ LLM client functions ------------------------
+def create_llm_client():
     """
-    Create and return an initialized Google Generative AI client.
-    
+    Create and return an initialized Groq client.
+
     Returns:
-        LLMClient: An authenticated client for the genai API.
+        Groq: An authenticated client for the Groq API.
     """
-    return genai.Client(
-        api_key=os.environ["GOOGLE_API_KEY"],
-        vertexai=False,
-        http_options={"api_version": "v1alpha"},
+    return Groq(
+        api_key=os.environ["GROQ_API_KEY"],
     )
 
 
 def classify_videos(
     videos: List[dict],
-    llm_client: LLMClient,
+    llm_client: Any,
     default_topics: List[str],
     logger: Logger,
 ) -> VideoTopics:
     """
-    Classify videos based on their titles into semantic topics using an LLM.
-    
-    Processes videos in batches to handle large collections efficiently.
-    New topics may be discovered and added to the topic pool dynamically.
-    
-    Args:
-        videos: List of video dicts with 'snippet' containing 'title'
-        llm_client: LLM client instance
-        default_topics: List of default topic categories
-        logger: Logger instance
-        
-    Returns:
-        VideoTopics: Mapping of topics to video titles
+    Classify videos based on their titles into semantic topics using Groq LLM.
+    Uses Groq's structured JSON output to ensure reliable parsing.
     """
-    logger.info("Started classifying videos by topic using an LLM...")
+    logger.info("Started classifying videos by topic using Groq...")
 
     video_titles = [v["snippet"]["title"] for v in videos]
-
     topic_pool: set[str] = set(default_topics)
-    gencontent_config = GenerateContentConfig(
-        system_instruction=CLASSIFY_VIDEOS_SYS_PROMPT,
-        temperature=0,
-        response_schema=VideoTopics,
-        response_mime_type="application/json",
-    )
-
     video_topics = VideoTopics(topics=[])
     batches = int(math.ceil(len(video_titles) / max(1, CLASSIFY_VIDEOS_BATCH_SIZE)))
 
-    for i in range(0, batches):
+    for i in range(batches):
         logger.info(f"...classifying videos in batch {i + 1}/{batches}")
 
         start_idx = i * CLASSIFY_VIDEOS_BATCH_SIZE
         end_idx = min(len(video_titles), start_idx + CLASSIFY_VIDEOS_BATCH_SIZE)
+        batch_titles = video_titles[start_idx:end_idx]
 
         prompt = CLASSIFY_VIDEOS_USER_PROMPT.format(
-            video_titles=video_titles[start_idx:end_idx], topics=sorted(topic_pool)
+            video_titles=batch_titles, topics=sorted(topic_pool)
         )
 
-        logger.debug(f"Prompt sent to LLM: {prompt}")
+        logger.debug(f"Prompt sent to Groq: {prompt}")
 
-        response = llm_client.models.generate_content(
+        # Call Groq API with structured output
+        json_schema = enforce_no_additional_properties(VideoTopics.model_json_schema())
+
+        response = llm_client.chat.completions.create(
             model=LLM,
-            contents=prompt,
-            config=gencontent_config,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=1024,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "VideoTopics",
+                    "strict": True,
+                    "schema": json_schema,
+                },
+            },
         )
 
-        if response.parsed:
-            video_topics = video_topics + response.parsed
+        if response and response.choices:
+            structured_output = response.choices[0].message.content
+
+            video_topics = video_topics + VideoTopics.model_validate_json(
+                structured_output
+            )
+            # Update topic pool for next batch
+            topic_pool |= set(video_topics.get_topics())
         else:
-            logger.warning("Failed to get a response from the LLM!")
+            logger.warning("No response returned from Groq!")
 
-        # Feed default and newly-discovered video topics back to the LLM.
-        topic_pool |= set(video_topics.get_topics())
-        sleep(1)
+        sleep(POLITENESS_DELAY_SEC)
 
-    logger.info("Done partionning videos by topic using LLM.")
+    logger.info("Done partitioning videos by topic using Groq.")
     return video_topics
+
+
+def enforce_no_additional_properties(schema: dict) -> dict:
+    """ Recursively enforce "additionalProperties": False in a JSON schema dict.
+
+    Args:
+        schema (dict):  The JSON schema to modify.
+
+    Returns:
+        dict: The modified JSON schema.
+    """
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            schema.setdefault("additionalProperties", False)
+
+        for key, value in schema.items():
+            enforce_no_additional_properties(value)
+
+    elif isinstance(schema, list):
+        for item in schema:
+            enforce_no_additional_properties(item)
+
+    return schema
 
 
 def generate_video_search_query(
     topic: str,
     sampled_videos: List[dict],
     target_languages: List[str],
-    llm_client: LLMClient,
+    llm_client: Any,
     logger: Logger,
 ) -> str:
     """
     Generate a creative YouTube search query for a given topic.
-    
+
     Uses LLM to generate diverse and targeted search queries based on sampled videos
     from a topic. Supports multilingual output.
-    
+
     Args:
         topic: Topic category to generate query for
         sampled_videos: List of sample videos from the topic
         target_languages: List of target languages for the search query
         llm_client: LLM client instance
         logger: Logger instance
-        
+
     Returns:
         str: Generated search query (3-5 words)
     """
@@ -226,15 +249,10 @@ def generate_video_search_query(
         f"Started generating a YT search query for topic {topic} (using {len(sampled_videos)} videos)..."
     )
 
-    # Customize temperature and top_p to balance diversity/relevance of generated search query.
-    gencontent_config = GenerateContentConfig(
-        system_instruction=GEN_SEARCH_QUERY_SYS_PROMPT, temperature=1.0, top_p=0.7
-    )
-
     prompt_videos = [
         {
             "video_title": v["snippet"]["title"],
-            "video_description": v["snippet"]["description"],
+            "video_description": truncate(v["snippet"]["description"]),
         }
         for v in sampled_videos
     ]
@@ -243,13 +261,23 @@ def generate_video_search_query(
         videos=prompt_videos, languages=target_languages, topic=topic
     )
 
-    response = llm_client.models.generate_content(
+    response = llm_client.chat.completions.create(
         model=LLM,
-        contents=prompt,
-        config=gencontent_config,
+        messages=[
+            {"role": "system", "content": GEN_SEARCH_QUERY_SYS_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=1.0,
     )
 
-    search_query = response.text
+    message = response.choices[0].message
+    search_query = message.content.strip()
+
     logger.info(f'Done generating YT search query: "{search_query}".')
+    
+    sleep(POLITENESS_DELAY_SEC)
 
     return search_query
+
+def truncate(text: str, max_len: int = 200) -> str:
+    return text if len(text) <= max_len else text[:max_len] + "..."
