@@ -1,3 +1,6 @@
 .env
 token.json
 oauth.json
+__pycache__/
+
+

@@ -26,22 +26,27 @@ import math
 import os
 import random
 from logging import Logger
-from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Dict, List, Tuple, Set, Sequence
 
 import dotenv
 from google import genai
-from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.genai import Client as LLMClient
 from google.genai.types import GenerateContentConfig
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource as YouTubeClient
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+# Import YouTube API functions
+from youtube_api import (
+    get_oauth_credentials,
+    create_youtube_client,
+    fetch_playlist_items,
+    fetch_liked_videos,
+    search_youtube,
+    add_to_recommendation_playlist,
+    delete_old_llm_videos,
+)
 
 
 class RecommenderSettings(BaseSettings):
@@ -118,23 +123,11 @@ class RecommenderSettings(BaseSettings):
 """,
     )
 
+# LLM configs
 
-# ------------------------ YouTube API Scopes read/write permissions required by recommender ------------------------
-OAUTH_SECRETS_FILE = "oauth.json"  # File exported from Google console.
-OAUTH_TOKEN_FILE = (
-    "token.json"  # File containing the current OAuth token and a refresh token.
-)
-
-
-YT_API_SCOPES = [
-    "https://www.googleapis.com/auth/youtube.readonly",
-    "https://www.googleapis.com/auth/youtube.force-ssl",
-]
-
-# ------------------------ Google GenAI configs ------------------------
 LLM = "gemini-2.5-flash"
 
-
+# LLM prompts
 CLASSIFY_VIDEOS_SYS_PROMPT = """
 You are a video content classifier. 
 You receive a list of YouTube video titles and return a JSON dictionary mapping each title to one of 
@@ -190,37 +183,6 @@ TWEEKING = False  # Set to True to log messages useful for tweeking the recommen
 
 
 # ------------------------ Recommender functions ------------------------
-def get_oauth_credentials() -> Credentials:
-    """
-    Gets an OAuth2 credentials (access token) from Google, if required, then creates a YouTube API client.
-    """
-    if not os.path.exists(OAUTH_TOKEN_FILE):
-        oauth_flow = InstalledAppFlow.from_client_secrets_file(
-            OAUTH_SECRETS_FILE, scopes=YT_API_SCOPES
-        )
-        credentials = oauth_flow.run_local_server(
-            port=9090,
-            prompt="consent",
-            access_type="offline",
-            include_granted_scopes="true",
-        )
-
-        Path(OAUTH_TOKEN_FILE).write_text(credentials.to_json())
-    else:
-        credentials = Credentials.from_authorized_user_file(OAUTH_TOKEN_FILE)
-        if credentials.expired:
-            credentials.refresh(GoogleAuthRequest())
-            Path(OAUTH_TOKEN_FILE).write_text(credentials.to_json())
-
-    return credentials
-
-
-def create_youtube_client(oauth_credentials: Credentials) -> YouTubeClient:
-    """
-    Returns A YouTube API client.
-    """
-    return build("youtube", "v3", credentials=oauth_credentials, cache_discovery=False)
-
 
 def create_llm_client() -> LLMClient:
     """
@@ -229,80 +191,6 @@ def create_llm_client() -> LLMClient:
     return genai.Client(api_key=os.environ["GOOGLE_API_KEY"], vertexai=False, http_options={'api_version': 'v1alpha'})
 
 
-def fetch_playlist_items(
-    playlist_id: str,
-    max_videos: int,
-    yt_client: YouTubeClient,
-    logger: Logger,
-) -> List[Dict]:
-    """
-    Fetches up to <max_videos> from playlist <plylist_id>
-    """
-    fetched = []
-
-    try:
-        parts = "id,snippet,contentDetails"
-
-        request = yt_client.playlistItems().list(
-            part=parts, playlistId=playlist_id, maxResults=min(max_videos, 50)
-        )
-
-        while request and len(fetched) < max_videos:
-            response = request.execute()
-            fetched.extend(item for item in response["items"])
-            request = yt_client.playlistItems().list_next(request, response)
-    except Exception as e:
-        logger.error(f"Failed to fetch (some) videos with exception {e}")
-
-    fetch_videos = fetched[:max_videos]
-
-    return fetch_videos
-
-
-def fetch_liked_videos(
-    max_videos: int, yt_client: YouTubeClient, logger: Logger
-) -> List[Dict]:
-    """
-    Fetches up to <max_videos> YouTube videos that current user liked.
-    """
-    logger.info(f"Started fetching up to {max_videos} liked videos from YouTube...")
-    liked_videos = fetch_playlist_items("LL", max_videos, yt_client, logger)
-    logger.info(f"Done fetching  {len(liked_videos)} liked videos from YouTube.")
-
-    return liked_videos
-
-
-def delete_old_llm_videos(
-    videos: List[Dict],
-    videos_to_keep_count: int,
-    yt_client: YouTubeClient,
-    logger: Logger,
-) -> None:
-    logger.info(
-        f"Started deleting old recommended videos, keeping {videos_to_keep_count} recommendations..."
-    )
-
-    try:
-        videos_count = len(videos)
-        logger.info(f"...fetched {videos_count} from recommendations playlist.")
-        if videos_count > videos_to_keep_count:
-            # Delete at most 10 videos, to avoid exceeding YouTube API quota (10000 pt, 50 pt per delete request)
-            videos_to_delete_count = min(10, videos_count - videos_to_keep_count)
-            logger.info(
-                f"...deleting {videos_to_delete_count} older recommendations from playlist."
-            )
-
-            for vid in list(reversed(videos))[:videos_to_delete_count]:
-                playlistitem_id = vid["id"]
-                logger.info(f"...deleting item {playlistitem_id}")
-                request = yt_client.playlistItems().delete(id=playlistitem_id)
-                request.execute()
-                sleep(1)
-
-    except Exception as e:
-        logger.warning(f"Failed to delete older recommendations with error {e}")
-
-    logger.info("Done deleting old recommended videos.")
 
 
 # Classes Topic and VideoTopics serve as the response schema for
@@ -501,47 +389,6 @@ def generate_video_search_query(
     return search_query
 
 
-def search_youtube(
-    query: str, max_results: int, yt_client, logger: Logger
-) -> List[Dict]:
-    logger.info(f"Searching Youtube with query: '{query}'(max_results{max_results})...")
-
-    try:
-        response = (
-            yt_client.search()
-            .list(
-                part="snippet",
-                q=query,
-                type="video",
-                maxResults=max_results,
-                order="relevance",
-                videoDefinition="high",
-                videoDuration="long",
-            )
-            .execute()
-        )
-
-        videos = []
-        for item in response["items"]:
-            videoId = item["id"]["videoId"]
-            snippet = item["snippet"]
-            videos.append(
-                {
-                    "videoId": videoId,
-                    "title": snippet["title"],
-                    "channelId": snippet["channelId"],
-                    "publishedAt": snippet["publishedAt"],
-                }
-            )
-
-        logger.info(f"Done searching Youtube, got {len(videos)} results.")
-        return videos
-
-    except HttpError as error:
-        logger.error(f"Youtube search failed with error: {error}!")
-        return []
-
-
 def select_recommended_videos(
     video_pool_by_topic: Dict[str, List[Dict]],
     tabu_list: List[Dict],
@@ -586,41 +433,6 @@ def filter_recommended_videos(
 def delete_tabu_videos(videos: List[Dict], tabu_channels: Set[str]) -> List[Dict]:
     return list(filter(lambda v: v["channelId"] not in tabu_channels, videos))
 
-
-def add_to_recommendation_playlist(
-    videos: List[Dict], playlist_id: str, yt_client, logger: Logger
-) -> None:
-    logger.info(
-        f"Started adding {len(videos)} reommendations to your LLM recommendations playlist..."
-    )
-
-    added_count = 0
-    for video in videos:
-        try:
-            logger.info(f"...adding video {video['title']}-{video['videoId']}")
-
-            yt_client.playlistItems().insert(
-                part="snippet",
-                body={
-                    "snippet": {
-                        "playlistId": playlist_id,
-                        "position": 0,
-                        "resourceId": {
-                            "kind": "youtube#video",
-                            "videoId": video["videoId"],
-                        },
-                    }
-                },
-            ).execute()
-            added_count += 1
-            sleep(1)
-
-        except HttpError as e:
-            logger.error(e)
-
-    logger.info(
-        f"Done adding {added_count} reommendations to your LLM recommendations playlist..."
-    )
 
 
 def run_recommendation_workflow(
