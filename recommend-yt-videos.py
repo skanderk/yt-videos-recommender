@@ -26,23 +26,14 @@ import os
 import random
 from logging import Logger
 from time import perf_counter, sleep
-from typing import Any, Dict, List, Tuple, Set, Sequence
+from typing import Dict, List, Tuple, Set, Sequence
 
 import dotenv
-from googleapiclient.discovery import Resource as YouTubeClient
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-# Import YouTube API functions
 from google_oauth_client import GoogleOAuthClient
-from youtube_api import (
-    create_youtube_client,
-    fetch_playlist_items,
-    fetch_liked_videos,
-    search_youtube,
-    add_to_recommendation_playlist,
-    delete_old_llm_videos,
-)
+from youtube_client import YouTubeClient
 
 # Import LLM API functions and configuration
 from llm_client import (
@@ -259,7 +250,7 @@ def run_recommendation_workflow(
     Runs the full video recommendation workflow.
     """
     try:
-        videos = fetch_liked_videos(settings.num_liked_videos, yt_client, logger)
+        videos = yt_client.fetch_liked_videos(settings.num_liked_videos)
         random.shuffle(
             videos
         )  # Shuffle to avoid have similar videos next to each other in collection.
@@ -278,9 +269,8 @@ def run_recommendation_workflow(
         result_vids_by_topic = search_topic_videos(search_queries, yt_client, logger)
 
         recommendations_playlist = os.environ["YT_RECOMMENDATIONS_PLAYLIST_ID"]
-        prev_rcommended_vids = fetch_playlist_items(
-            recommendations_playlist, 100, yt_client, logger
-        )
+        prev_rcommended_vids = yt_client.fetch_playlist_videos(
+            recommendations_playlist, 100)
 
         recommendations = select_recommended_videos(
             result_vids_by_topic,
@@ -289,18 +279,15 @@ def run_recommendation_workflow(
             logger,
         )
 
-        add_to_recommendation_playlist(
+        yt_client.add_videos_to_playlist(
             recommendations,
             recommendations_playlist,
-            yt_client,
-            logger,
+            
         )
 
-        delete_old_llm_videos(
+        yt_client.delete_videos_from_playlist(
             prev_rcommended_vids,
             5 * settings.num_recommendations,
-            yt_client,
-            logger,
         )
     except Exception:
         logger.exception("Recommendation Workflow failed!")
@@ -353,9 +340,7 @@ def search_topic_videos(
 ) -> Dict[TopicName, List[VideoDict]]:
     search_results: Dict[TopicName, List[VideoDict]] = {}
     for topic, query in query_by_topic.items():
-        search_results[topic] = search_youtube(
-            query, max_results=10, yt_client=yt_client, logger=logger
-        )
+        search_results[topic] = yt_client.search_videos(query, max_results=10)
         sleep(1)
 
     return search_results
@@ -450,7 +435,7 @@ def load_environment(logger: Logger):
         exit(-1)
 
 
-def create_clients(logger: Logger) -> Tuple[YouTubeClient, Any]:
+def create_clients(logger: Logger) -> Tuple[YouTubeClient, LlmClient]:
     """
     Authenticates and creates the YouTube Data API client and LLM client.
     """
@@ -458,7 +443,7 @@ def create_clients(logger: Logger) -> Tuple[YouTubeClient, Any]:
         secrets_file=OAUTH_SECRETS_FILE, token_file=OAUTH_TOKEN_FILE
     )
     outh_credentials = oauth_client.get_credentials(scopes=YT_API_SCOPES)
-    yt_client = create_youtube_client(outh_credentials)
+    yt_client = YouTubeClient(outh_credentials, logger)
 
     llm_client = LlmClient(create_llm_config(), logger)
 
