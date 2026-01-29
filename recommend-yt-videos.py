@@ -46,11 +46,14 @@ from youtube_api import (
 
 # Import LLM API functions and configuration
 from llm_api import (
-    VideoTopics,
+    YtVideoRecommenderLlmConfig,
     create_llm_client,
     classify_videos,
     generate_video_search_query,
+    get_llm_config,
 )
+
+from models import VideoTopics
 
 
 # ------------------------ OAuth configuration ------------------------
@@ -67,9 +70,8 @@ class RecommenderSettings(BaseSettings):
     """
     Settings of the YouTube videos recommender. Customize per your needs and likings.
     """
-
     num_topics: int = Field(
-        default=10,
+        default=2,
         gt=1,
         lt=20,
         title="The maximum number of topics to sample. Increase for more diversity.",
@@ -90,7 +92,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_liked_videos: int = Field(
-        default=100,
+        default=10,
         gt=1,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
@@ -247,6 +249,7 @@ def delete_tabu_videos(videos: List[Dict], tabu_channels: Set[str]) -> List[Dict
 def run_recommendation_workflow(
     yt_client: YouTubeClient,
     llm_client: Any,
+    llm_config: YtVideoRecommenderLlmConfig,
     settings: RecommenderSettings,
     logger: Logger,
 ) -> None:
@@ -260,7 +263,7 @@ def run_recommendation_workflow(
         )  # Shuffle to avoid have similar videos next to each other in collection.
 
         topic_buckets = build_topic_buckets(
-            videos, llm_client, settings.default_topics, logger
+            videos, llm_client, llm_config, settings.default_topics, logger
         )
 
     
@@ -269,7 +272,7 @@ def run_recommendation_workflow(
         )
 
         search_queries = generate_search_queries(
-            sampled_videos, settings.target_languages, llm_client, logger
+            sampled_videos, settings.target_languages, llm_client, llm_config, logger
         )
         logger.debug(search_queries)
 
@@ -306,9 +309,9 @@ def run_recommendation_workflow(
 
 
 def build_topic_buckets(
-    videos: List[Dict], llm_client: Any, video_topics: List[str], logger: Logger
+    videos: List[Dict], llm_client: Any, llm_config: YtVideoRecommenderLlmConfig, video_topics: List[str], logger: Logger
 ) -> Dict[str, List[str]]:
-    titles_by_topic = classify_videos(videos, llm_client, video_topics, logger)
+    titles_by_topic = classify_videos(videos, llm_client, llm_config, video_topics, logger)
     logger.debug(titles_by_topic.model_dump_json())
 
     return create_topic_buckets(videos, titles_by_topic)
@@ -333,12 +336,13 @@ def generate_search_queries(
     videos_by_topic: Dict[str, List[Dict]],
     target_languages: List[str],
     llm_client: Any,
+    llm_config: YtVideoRecommenderLlmConfig,
     logger: Logger,
 ) -> Dict[str, str]:
     search_queries: Dict[str, str] = {}
     for topic, videos in videos_by_topic.items():
         search_query = generate_video_search_query(
-            topic, videos, target_languages, llm_client, logger
+            topic, videos, target_languages, llm_client, llm_config, logger
         )
         search_queries[topic] = search_query
 
@@ -365,8 +369,9 @@ def main() -> None:
     settings, clock_start, logger = setup()
     logger.info("--> Started making YouTube video recommendations ...")
 
-    youtube_client, llm_client = create_clients()
-    run_recommendation_workflow(youtube_client, llm_client, settings, logger)
+    llm_config = get_llm_config()
+    youtube_client, llm_client = create_clients(llm_config)
+    run_recommendation_workflow(youtube_client, llm_client, llm_config, settings, logger)
 
     # Finalizing
     run_time_secs = perf_counter() - clock_start
@@ -447,7 +452,7 @@ def load_environment(logger: Logger):
         exit(-1)
 
 
-def create_clients() -> Tuple[YouTubeClient, Any]:
+def create_clients(llm_config: YtVideoRecommenderLlmConfig) -> Tuple[YouTubeClient, Any]:
     """
     Authenticates and creates the YouTube Data API client and LLM client.
     """
@@ -458,7 +463,7 @@ def create_clients() -> Tuple[YouTubeClient, Any]:
 
     outh_credentials = oauth_client.get_credentials(scopes=YT_API_SCOPES)
     yt_client = create_youtube_client(outh_credentials)
-    llm_client = create_llm_client()
+    llm_client = create_llm_client(llm_config)
 
     return yt_client, llm_client
 
