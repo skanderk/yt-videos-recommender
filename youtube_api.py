@@ -2,58 +2,18 @@
 youtube_api.py
 ~~~~~~~~~~~~~~
 
-YouTube Data API v3 client functions and OAuth authentication handlers.
-Encapsulates all direct interactions with the YouTube Data API.
+YouTube Data API v3 helper functions for fetching playlist items, liked videos,
+searching videos, adding to playlists, and deleting old liked videos.
 """
 
-import os
 from logging import Logger
-from pathlib import Path
 from time import sleep
 from typing import Dict, List
 
-from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource as YouTubeClient
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
-
-# OAuth configuration
-OAUTH_SECRETS_FILE = "oauth.json"
-OAUTH_TOKEN_FILE = "token.json"
-
-YT_API_SCOPES = [
-    "https://www.googleapis.com/auth/youtube.readonly",
-    "https://www.googleapis.com/auth/youtube.force-ssl",
-]
-
-
-def get_oauth_credentials() -> Credentials:
-    """
-    Gets an OAuth2 credentials (access token) from Google, if required.
-    Creates a new token or refreshes an existing one.
-    """
-    if not os.path.exists(OAUTH_TOKEN_FILE):
-        oauth_flow = InstalledAppFlow.from_client_secrets_file(
-            OAUTH_SECRETS_FILE, scopes=YT_API_SCOPES
-        )
-        credentials = oauth_flow.run_local_server(
-            port=9090,
-            prompt="consent",
-            access_type="offline",
-            include_granted_scopes="true",
-        )
-
-        Path(OAUTH_TOKEN_FILE).write_text(credentials.to_json())
-    else:
-        credentials = Credentials.from_authorized_user_file(OAUTH_TOKEN_FILE)
-        if credentials.expired:
-            credentials.refresh(GoogleAuthRequest())
-            Path(OAUTH_TOKEN_FILE).write_text(credentials.to_json())
-
-    return credentials
 
 
 def create_youtube_client(oauth_credentials: Credentials) -> YouTubeClient:

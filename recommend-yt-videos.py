@@ -34,8 +34,8 @@ from pydantic import  Field
 from pydantic_settings import BaseSettings
 
 # Import YouTube API functions
+from google_oauth_client import GoogleOAuthClient
 from youtube_api import (
-    get_oauth_credentials,
     create_youtube_client,
     fetch_playlist_items,
     fetch_liked_videos,
@@ -52,6 +52,15 @@ from llm_api import (
     generate_video_search_query,
 )
 
+
+# ------------------------ OAuth configuration ------------------------
+OAUTH_SECRETS_FILE = "oauth.json"
+OAUTH_TOKEN_FILE = "token.json"
+
+YT_API_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+]
 
 # ------------------------ Recommender settings ------------------------
 class RecommenderSettings(BaseSettings):
@@ -440,9 +449,14 @@ def load_environment(logger: Logger):
 
 def create_clients() -> Tuple[YouTubeClient, Any]:
     """
-    Authenticates to YouTube and creates API clients
+    Authenticates and creates the YouTube Data API client and LLM client.
     """
-    outh_credentials = get_oauth_credentials()
+    oauth_client = GoogleOAuthClient(
+        secrets_file= OAUTH_SECRETS_FILE,
+        token_file= OAUTH_TOKEN_FILE
+    )
+
+    outh_credentials = oauth_client.get_credentials(scopes=YT_API_SCOPES)
     yt_client = create_youtube_client(outh_credentials)
     llm_client = create_llm_client()
 
