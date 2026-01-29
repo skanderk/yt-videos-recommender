@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Tuple, Set, Sequence
 
 import dotenv
 from googleapiclient.discovery import Resource as YouTubeClient
-from pydantic import  Field
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 # Import YouTube API functions
@@ -51,6 +51,7 @@ from llm_client import (
 )
 
 from models import VideoTopics
+from type_aliases import VideoDict, TopicName, VideoTitle, SearchQuery, ChannelName
 
 
 # ------------------------ OAuth configuration ------------------------
@@ -62,11 +63,13 @@ YT_API_SCOPES = [
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
+
 # ------------------------ Recommender settings ------------------------
 class RecommenderSettings(BaseSettings):
     """
     Settings of the YouTube videos recommender. Customize per your needs and likings.
     """
+
     num_topics: int = Field(
         default=2,
         gt=1,
@@ -137,19 +140,13 @@ class RecommenderSettings(BaseSettings):
     )
 
 
-
 # ------------------------ Misc configs ------------------------
 LOG_FILE = None  # Log file path. Set to None to log to console.
 TWEEKING = True  # Set to True to log messages useful for tweeking the recommender.
 
-# Type aliases
-VideoDict = Dict[str, Any]
-TopicName = str
-ChannelName = str
-VideoTitle = str
-SearchQuery = str
 
 # ------------------------ Recommender functions ------------------------
+
 
 # Classes Topic and VideoTopics serve as the response schema for
 # the LLM “classify-videos” prompt.
@@ -176,7 +173,9 @@ def index_videos_by_title(videos: List[VideoDict]) -> Dict[VideoTitle, VideoDict
     return index
 
 
-def titles_to_videos(titles: List[VideoTitle], videos_index: Dict[VideoTitle, VideoDict]) -> List[VideoDict]:
+def titles_to_videos(
+    titles: List[VideoTitle], videos_index: Dict[VideoTitle, VideoDict]
+) -> List[VideoDict]:
     return [v for t in titles if (v := videos_index.get(t))]
 
 
@@ -244,9 +243,10 @@ def filter_recommended_videos(
     }
 
 
-def delete_tabu_videos(videos: List[VideoDict], tabu_channels: Set[ChannelName]) -> List[VideoDict]:
+def delete_tabu_videos(
+    videos: List[VideoDict], tabu_channels: Set[ChannelName]
+) -> List[VideoDict]:
     return list(filter(lambda v: v["channelId"] not in tabu_channels, videos))
-
 
 
 def run_recommendation_workflow(
@@ -264,11 +264,8 @@ def run_recommendation_workflow(
             videos
         )  # Shuffle to avoid have similar videos next to each other in collection.
 
-        topic_buckets = build_topic_buckets(
-            videos, llm_client, settings.default_topics
-        )
+        topic_buckets = build_topic_buckets(videos, llm_client, settings.default_topics)
 
-    
         sampled_videos = sample_bucket_videos(
             topic_buckets, settings.num_topics, settings.num_videos_topic, logger
         )
@@ -350,7 +347,9 @@ def generate_search_queries(
 
 
 def search_topic_videos(
-    query_by_topic: Dict[TopicName, SearchQuery], yt_client: YouTubeClient, logger: Logger
+    query_by_topic: Dict[TopicName, SearchQuery],
+    yt_client: YouTubeClient,
+    logger: Logger,
 ) -> Dict[TopicName, List[VideoDict]]:
     search_results: Dict[TopicName, List[VideoDict]] = {}
     for topic, query in query_by_topic.items():
@@ -456,18 +455,18 @@ def create_clients(logger: Logger) -> Tuple[YouTubeClient, Any]:
     Authenticates and creates the YouTube Data API client and LLM client.
     """
     oauth_client = GoogleOAuthClient(
-        secrets_file= OAUTH_SECRETS_FILE,
-        token_file= OAUTH_TOKEN_FILE
+        secrets_file=OAUTH_SECRETS_FILE, token_file=OAUTH_TOKEN_FILE
     )
     outh_credentials = oauth_client.get_credentials(scopes=YT_API_SCOPES)
     yt_client = create_youtube_client(outh_credentials)
-    
+
     llm_client = LlmClient(create_llm_config(), logger)
 
     return yt_client, llm_client
 
+
 def create_llm_config():
-    """ Returns the LLM configuration used by the app. """
+    """Returns the LLM configuration used by the app."""
     if "GROQ_API_KEY" not in os.environ:
         raise EnvironmentError("GROQ_API_KEY environment variable not set.")
 
