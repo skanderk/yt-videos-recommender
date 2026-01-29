@@ -10,10 +10,12 @@ import math
 import os
 from logging import Logger
 from time import sleep
-from typing import Any, Dict, List
+from typing import Any, List
 
 from groq import Groq
-from pydantic import BaseModel
+
+from models import VideoTopics
+from utils import enforce_no_additional_properties, truncate
 
 
 # LLM model configuration
@@ -70,55 +72,6 @@ videos:
 languages:
 {languages}
 """
-
-
-# ------------------------ LLM response schema ------------------------
-class Topic(BaseModel):
-    """A single topic grouping a list of YouTube video titles."""
-
-    name: str
-    videos: List[str]
-
-
-class VideoTopics(BaseModel):
-    """
-    A collection of ``Topic`` instances.
-    """
-
-    topics: List[Topic]
-
-    def to_dict(self) -> Dict[str, List[str]]:
-        return {tp.name: tp.videos for tp in self.topics}
-
-    def get_topics(self) -> List[str]:
-        return [t.name for t in self.topics]
-
-    @staticmethod
-    def from_dict(d: Dict[str, List[str]]) -> "VideoTopics":
-        topics = [Topic(name=name, videos=vids) for name, vids in d.items()]
-        return VideoTopics(topics=topics)
-
-    def __add__(self, other: "VideoTopics") -> "VideoTopics":
-        """
-        Merges the topics of two ``VideoTopics``. Immutable, returns a new ``VideoTopics`` with the
-        merged topics.
-
-        Handy when you run an LLM on multiple chunks of video titles and need
-        to fold the per-chunk topic maps into a single, consolidated result.
-        """
-        if not isinstance(other, VideoTopics):
-            return NotImplemented
-
-        merged = self.to_dict()
-        for ot in other.topics:
-            if ot.name in merged:
-                merged[ot.name] = list(
-                    dict.fromkeys(merged[ot.name] + ot.videos)
-                )  # Deduplicate
-            else:
-                merged[ot.name] = ot.videos.copy()
-
-        return VideoTopics.from_dict(merged)
 
 
 # ------------------------ LLM client functions ------------------------
@@ -199,28 +152,6 @@ def classify_videos(
     return video_topics
 
 
-def enforce_no_additional_properties(schema: dict) -> dict:
-    """ Recursively enforce "additionalProperties": False in a JSON schema dict.
-
-    Args:
-        schema (dict):  The JSON schema to modify.
-
-    Returns:
-        dict: The modified JSON schema.
-    """
-    if isinstance(schema, dict):
-        if schema.get("type") == "object":
-            schema.setdefault("additionalProperties", False)
-
-        for key, value in schema.items():
-            enforce_no_additional_properties(value)
-
-    elif isinstance(schema, list):
-        for item in schema:
-            enforce_no_additional_properties(item)
-
-    return schema
-
 
 def generate_video_search_query(
     topic: str,
@@ -279,5 +210,3 @@ def generate_video_search_query(
 
     return search_query
 
-def truncate(text: str, max_len: int = 200) -> str:
-    return text if len(text) <= max_len else text[:max_len] + "..."
