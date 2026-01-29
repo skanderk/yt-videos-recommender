@@ -45,12 +45,9 @@ from youtube_api import (
 )
 
 # Import LLM API functions and configuration
-from llm_api import (
+from llm_client import (
+    LlmClient,
     YtVideoRecommenderLlmConfig,
-    create_llm_client,
-    classify_videos,
-    generate_video_search_query,
-    get_llm_config,
 )
 
 from models import VideoTopics
@@ -145,15 +142,21 @@ class RecommenderSettings(BaseSettings):
 LOG_FILE = None  # Log file path. Set to None to log to console.
 TWEEKING = True  # Set to True to log messages useful for tweeking the recommender.
 
+# Type aliases
+VideoDict = Dict[str, Any]
+TopicName = str
+ChannelName = str
+VideoTitle = str
+SearchQuery = str
 
 # ------------------------ Recommender functions ------------------------
-
 
 # Classes Topic and VideoTopics serve as the response schema for
 # the LLM “classify-videos” prompt.
 def create_topic_buckets(
-    videos: List[Dict], video_titles_by_topic: VideoTopics
-) -> Dict[str, List[Dict]]:
+    videos: List[VideoDict], video_titles_by_topic: VideoTopics
+) -> Dict[TopicName, List[VideoDict]]:
+    """Return {topic_name → [video_dicts]} using the VideoTopics instance."""
     topic_dict = video_titles_by_topic.to_dict()
     videos_index = index_videos_by_title(videos)
 
@@ -163,22 +166,22 @@ def create_topic_buckets(
     }
 
 
-def index_videos_by_title(videos: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def index_videos_by_title(videos: List[VideoDict]) -> Dict[VideoTitle, VideoDict]:
     """Return {title → video_dict}. Keeps the **first** occurrence, skips videos without a title."""
-    index: Dict[str, Dict[str, Any]] = {}
+    index: Dict[VideoTitle, VideoDict] = {}
     for v in videos:
-        title = v.get("snippet", {}).get("title")
+        title = v.get("snippet", {}).get("title", "")
         if title and title not in index:
             index[title] = v
     return index
 
 
-def titles_to_videos(titles: List[str], videos_index: Dict) -> List[Dict]:
+def titles_to_videos(titles: List[VideoTitle], videos_index: Dict[VideoTitle, VideoDict]) -> List[VideoDict]:
     return [v for t in titles if (v := videos_index.get(t))]
 
 
 def sample_video_topics(
-    topic_buckets: Dict[str, List[Dict]], max_sample_size: int
+    topic_buckets: Dict[TopicName, List[VideoDict]], max_sample_size: int
 ) -> List:
     """
     Samples max_sample_size video topics uniformly and without replacement.
@@ -190,7 +193,7 @@ def sample_video_topics(
     return random.sample(topics, max_sample_size)
 
 
-def sample_videos(video_pool: List[Dict], max_sample_size: int) -> List:
+def sample_videos(video_pool: List[VideoDict], max_sample_size: int) -> List[VideoDict]:
     """
     Samples max_sample_size videos uniformly and without replacement.
     """
@@ -201,11 +204,11 @@ def sample_videos(video_pool: List[Dict], max_sample_size: int) -> List:
 
 
 def select_recommended_videos(
-    video_pool_by_topic: Dict[str, List[Dict]],
-    tabu_list: List[Dict],
+    video_pool_by_topic: Dict[TopicName, List[VideoDict]],
+    tabu_list: List[VideoDict],
     max_recommendations: int,
     logger: Logger,
-) -> List[Dict]:
+) -> List[VideoDict]:
     topic_count = len(video_pool_by_topic)
     if topic_count == 0:
         logger.warning("Cannot select recommendations, no topics found!")
@@ -215,7 +218,7 @@ def select_recommended_videos(
 
     filtered_video_pool = filter_recommended_videos(video_pool_by_topic, tabu_list)
     count_by_topic = max(1, max_recommendations // topic_count)
-    recommendations: List[Dict] = []
+    recommendations: List[VideoDict] = []
     for topic, videos in filtered_video_pool.items():
         if len(videos) < count_by_topic:
             recommendations.extend(videos)
@@ -230,8 +233,8 @@ def select_recommended_videos(
 
 
 def filter_recommended_videos(
-    videos_by_topic: Dict[str, List[Dict]], tabu_list: Sequence[Dict]
-) -> Dict[str, List[Dict]]:
+    videos_by_topic: Dict[TopicName, List[VideoDict]], tabu_list: Sequence[VideoDict]
+) -> Dict[TopicName, List[VideoDict]]:
     """Return a copy of `videos_by_topic` with videos from tabu channels removed."""
     tabu_channels = set([v["snippet"]["channelId"] for v in tabu_list])
 
@@ -241,15 +244,14 @@ def filter_recommended_videos(
     }
 
 
-def delete_tabu_videos(videos: List[Dict], tabu_channels: Set[str]) -> List[Dict]:
+def delete_tabu_videos(videos: List[VideoDict], tabu_channels: Set[ChannelName]) -> List[VideoDict]:
     return list(filter(lambda v: v["channelId"] not in tabu_channels, videos))
 
 
 
 def run_recommendation_workflow(
     yt_client: YouTubeClient,
-    llm_client: Any,
-    llm_config: YtVideoRecommenderLlmConfig,
+    llm_client: LlmClient,
     settings: RecommenderSettings,
     logger: Logger,
 ) -> None:
@@ -263,7 +265,7 @@ def run_recommendation_workflow(
         )  # Shuffle to avoid have similar videos next to each other in collection.
 
         topic_buckets = build_topic_buckets(
-            videos, llm_client, llm_config, settings.default_topics, logger
+            videos, llm_client, settings.default_topics
         )
 
     
@@ -272,7 +274,7 @@ def run_recommendation_workflow(
         )
 
         search_queries = generate_search_queries(
-            sampled_videos, settings.target_languages, llm_client, llm_config, logger
+            sampled_videos, settings.target_languages, llm_client
         )
         logger.debug(search_queries)
 
@@ -309,16 +311,16 @@ def run_recommendation_workflow(
 
 
 def build_topic_buckets(
-    videos: List[Dict], llm_client: Any, llm_config: YtVideoRecommenderLlmConfig, video_topics: List[str], logger: Logger
-) -> Dict[str, List[str]]:
-    titles_by_topic = classify_videos(videos, llm_client, llm_config, video_topics, logger)
-    logger.debug(titles_by_topic.model_dump_json())
+    videos: List[VideoDict], llm_client: LlmClient, video_topics: List[TopicName]
+) -> Dict[TopicName, List[VideoDict]]:
+    titles_by_topic = llm_client.classify_videos(videos, video_topics)
+    llm_client.logger.debug(titles_by_topic.model_dump_json())
 
     return create_topic_buckets(videos, titles_by_topic)
 
 
 def sample_bucket_videos(
-    topic_buckets: Dict[str, List[Dict]],
+    topic_buckets: Dict[TopicName, List[VideoDict]],
     topic_sample_size: int,
     video_sample_size: int,
     logger: Logger,
@@ -333,16 +335,14 @@ def sample_bucket_videos(
 
 
 def generate_search_queries(
-    videos_by_topic: Dict[str, List[Dict]],
+    videos_by_topic: Dict[TopicName, List[VideoDict]],
     target_languages: List[str],
-    llm_client: Any,
-    llm_config: YtVideoRecommenderLlmConfig,
-    logger: Logger,
-) -> Dict[str, str]:
-    search_queries: Dict[str, str] = {}
+    llm_client: LlmClient,
+) -> Dict[TopicName, SearchQuery]:
+    search_queries: Dict[TopicName, SearchQuery] = {}
     for topic, videos in videos_by_topic.items():
-        search_query = generate_video_search_query(
-            topic, videos, target_languages, llm_client, llm_config, logger
+        search_query = llm_client.generate_video_search_query(
+            topic, videos, target_languages
         )
         search_queries[topic] = search_query
 
@@ -350,9 +350,9 @@ def generate_search_queries(
 
 
 def search_topic_videos(
-    query_by_topic: Dict[str, str], yt_client: YouTubeClient, logger: Logger
-) -> Dict[str, List[Dict]]:
-    search_results: Dict[str, List[Dict]] = {}
+    query_by_topic: Dict[TopicName, SearchQuery], yt_client: YouTubeClient, logger: Logger
+) -> Dict[TopicName, List[VideoDict]]:
+    search_results: Dict[TopicName, List[VideoDict]] = {}
     for topic, query in query_by_topic.items():
         search_results[topic] = search_youtube(
             query, max_results=10, yt_client=yt_client, logger=logger
@@ -369,9 +369,8 @@ def main() -> None:
     settings, clock_start, logger = setup()
     logger.info("--> Started making YouTube video recommendations ...")
 
-    llm_config = get_llm_config()
-    youtube_client, llm_client = create_clients(llm_config)
-    run_recommendation_workflow(youtube_client, llm_client, llm_config, settings, logger)
+    youtube_client, llm_client = create_clients(logger)
+    run_recommendation_workflow(youtube_client, llm_client, settings, logger)
 
     # Finalizing
     run_time_secs = perf_counter() - clock_start
@@ -452,7 +451,7 @@ def load_environment(logger: Logger):
         exit(-1)
 
 
-def create_clients(llm_config: YtVideoRecommenderLlmConfig) -> Tuple[YouTubeClient, Any]:
+def create_clients(logger: Logger) -> Tuple[YouTubeClient, Any]:
     """
     Authenticates and creates the YouTube Data API client and LLM client.
     """
@@ -460,12 +459,19 @@ def create_clients(llm_config: YtVideoRecommenderLlmConfig) -> Tuple[YouTubeClie
         secrets_file= OAUTH_SECRETS_FILE,
         token_file= OAUTH_TOKEN_FILE
     )
-
     outh_credentials = oauth_client.get_credentials(scopes=YT_API_SCOPES)
     yt_client = create_youtube_client(outh_credentials)
-    llm_client = create_llm_client(llm_config)
+    
+    llm_client = LlmClient(create_llm_config(), logger)
 
     return yt_client, llm_client
+
+def create_llm_config():
+    """ Returns the LLM configuration used by the app. """
+    if "GROQ_API_KEY" not in os.environ:
+        raise EnvironmentError("GROQ_API_KEY environment variable not set.")
+
+    return YtVideoRecommenderLlmConfig(api_key=os.environ["GROQ_API_KEY"])
 
 
 if __name__ == "__main__":
