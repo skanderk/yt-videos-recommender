@@ -5,6 +5,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from logging import Logger
+from tqdm import tqdm
 
 from type_aliases import SearchQuery, VideoDict
 
@@ -138,9 +139,9 @@ class YouTubeClient:
             f"Started adding {len(videos)} videos to playlist {playlist_id}...")
 
         added_count = 0
-        for video in videos:
+        for video in tqdm(videos, desc="Adding videos", disable=False):
             try:
-                self.logger.info(f"...adding video {video['title']}-{video['videoId']}")
+                self.logger.info(f"...adding video '{video['title']}', id={video['videoId']}")
 
                 self.client.playlistItems().insert(
                     part="snippet",
@@ -185,9 +186,9 @@ class YouTubeClient:
                     f"..deleting {videos_to_delete_count} old videos from playlist."
                 )
 
-                for vid in list(reversed(videos))[:videos_to_delete_count]:
+                for vid in tqdm(list(reversed(videos))[:videos_to_delete_count], desc="Deleting videos", disable=False):
                     playlistitem_id = vid["id"]
-                    self.logger.info(f"...deleting item {playlistitem_id}")
+                    self.logger.info(f"...deleting item '{playlistitem_id}'")
                     request = self.client.playlistItems().delete(id=playlistitem_id)
                     request.execute()
                     sleep(1)

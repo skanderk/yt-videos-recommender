@@ -3,6 +3,7 @@ from logging import Logger
 from time import sleep
 from typing import List
 
+from tqdm import tqdm
 from pydantic import Field
 from groq import Groq
 
@@ -49,7 +50,7 @@ class LlmClient:
             )
         )
 
-        for i in range(batches):
+        for i in tqdm(range(batches), desc="Classifying video batches", disable=False):
             self.logger.info(f"...classifying videos in batch {i + 1}/{batches}")
 
             start_idx = i * self.config.classify_videos_batch_size

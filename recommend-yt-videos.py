@@ -26,23 +26,30 @@ import os
 import random
 from logging import Logger
 from time import perf_counter, sleep
-from typing import Dict, List, Tuple, Set, Sequence
+from typing import Dict, List, Sequence, Set, Tuple
 
 import dotenv
+from rich.logging import RichHandler
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from tqdm import tqdm
 
 from google_oauth_client import GoogleOAuthClient
 from youtube_client import YouTubeClient
 
-# Import LLM API functions and configuration
 from llm_client import (
     LlmClient,
     YtVideoRecommenderLlmConfig,
 )
 
 from models import VideoTopics
-from type_aliases import VideoDict, TopicName, VideoTitle, SearchQuery, ChannelName
+from type_aliases import (
+    ChannelName,
+    SearchQuery,
+    TopicName,
+    VideoDict,
+    VideoTitle,
+)
 
 
 # ------------------------ OAuth configuration ------------------------
@@ -62,7 +69,7 @@ class RecommenderSettings(BaseSettings):
     """
 
     num_topics: int = Field(
-        default=2,
+        default=10,
         gt=1,
         lt=20,
         title="The maximum number of topics to sample. Increase for more diversity.",
@@ -83,7 +90,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_liked_videos: int = Field(
-        default=10,
+        default=200,
         gt=1,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
@@ -132,8 +139,7 @@ class RecommenderSettings(BaseSettings):
 
 
 # ------------------------ Misc configs ------------------------
-LOG_FILE = None  # Log file path. Set to None to log to console.
-TWEEKING = True  # Set to True to log messages useful for tweeking the recommender.
+TWEEKING = False  # Set to True to log messages useful for tweeking the recommender.
 
 
 # ------------------------ Recommender functions ------------------------
@@ -270,7 +276,8 @@ def run_recommendation_workflow(
 
         recommendations_playlist = os.environ["YT_RECOMMENDATIONS_PLAYLIST_ID"]
         prev_rcommended_vids = yt_client.fetch_playlist_videos(
-            recommendations_playlist, 100)
+            recommendations_playlist, 100
+        )
 
         recommendations = select_recommended_videos(
             result_vids_by_topic,
@@ -282,7 +289,6 @@ def run_recommendation_workflow(
         yt_client.add_videos_to_playlist(
             recommendations,
             recommendations_playlist,
-            
         )
 
         yt_client.delete_videos_from_playlist(
@@ -324,7 +330,9 @@ def generate_search_queries(
     llm_client: LlmClient,
 ) -> Dict[TopicName, SearchQuery]:
     search_queries: Dict[TopicName, SearchQuery] = {}
-    for topic, videos in videos_by_topic.items():
+    for topic, videos in tqdm(
+        videos_by_topic.items(), desc="Generating search queries", disable=False
+    ):
         search_query = llm_client.generate_video_search_query(
             topic, videos, target_languages
         )
@@ -339,7 +347,9 @@ def search_topic_videos(
     logger: Logger,
 ) -> Dict[TopicName, List[VideoDict]]:
     search_results: Dict[TopicName, List[VideoDict]] = {}
-    for topic, query in query_by_topic.items():
+    for topic, query in tqdm(
+        query_by_topic.items(), desc="Searching topics", disable=False
+    ):
         search_results[topic] = yt_client.search_videos(query, max_results=10)
         sleep(1)
 
@@ -389,12 +399,13 @@ def create_logger():
     else:
         log_level = logging.INFO
 
+    rich_handler = RichHandler(show_time=False, show_path=False, rich_tracebacks=True)
     logging.basicConfig(
-        filename=LOG_FILE,
         level=log_level,
         encoding="utf8",
         format="%(asctime)s[%(levelname)s]: %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
+        handlers=[rich_handler],
     )
 
     return logger
@@ -414,6 +425,13 @@ def load_environment(logger: Logger):
                         https://developers.google.com/workspace/guides/create-credentials
                         """)
         all_set = False
+
+    if os.environ["GROQ_API_KEY"] == "":
+        logger.critical("""
+                        Env. variable GROQ_API_KEY is not set. 
+                        Please create a new Groq Cloud project and API key: 
+                        https://console.groq.com/home
+                        """)
 
     if not os.environ["OAUTH_CLIENT_ID"] or not os.environ["OAUTH_CLIENT_SECRET"]:
         logger.critical("""
