@@ -1,4 +1,5 @@
 import random
+import os
 from logging import Logger
 from time import sleep
 from typing import Dict, List, Sequence, Set
@@ -7,7 +8,6 @@ from tqdm import tqdm
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
-from recommendation_workflow import RecommendationWorkflow
 from youtube_client import YouTubeClient
 from llm_client import LlmClient
 from models import VideoTopics
@@ -56,7 +56,7 @@ class RecommenderSettings(BaseSettings):
         return self
 
     num_liked_videos: int = Field(
-        default=20,
+        default=50,
         gt=1,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
@@ -107,16 +107,63 @@ class RecommenderSettings(BaseSettings):
 class YoutubeVideosRecommender:
     def __init__(
         self,
-        workflow: RecommendationWorkflow,
         settings: RecommenderSettings,
         logger: Logger,
     ):
-        self.workflow = workflow
+
         self.settings = settings
         self.logger = logger
 
-    def run(self, yt_client: YouTubeClient, llm_client: LlmClient) -> None:
-        self.workflow.run(yt_client, llm_client, self.settings, self.logger, self)
+    def recommend(self, yt_client: YouTubeClient, llm_client: LlmClient) -> None:
+        """
+        Runs the full video recommendation workflow.
+        """
+        try:
+            videos = yt_client.fetch_liked_videos(self.settings.num_liked_videos)
+            random.shuffle(
+                videos
+            )  # Shuffle to avoid have similar videos next to each other in collection.
+
+            topic_buckets = self.build_topic_buckets(
+                videos, llm_client, self.settings.default_topics
+            )
+
+            sampled_videos = self.sample_bucket_videos(
+                topic_buckets, self.settings.num_topics, self.settings.num_videos_topic
+            )
+
+            search_queries = self.generate_search_queries(
+                sampled_videos, self.settings.target_languages, llm_client
+            )
+            self.logger.debug(search_queries)
+
+            result_vids_by_topic = self.search_topic_videos(
+                search_queries, yt_client, self.settings
+            )
+
+            recommendations_playlist = os.environ["YT_RECOMMENDATIONS_PLAYLIST_ID"]
+            prev_recommended_vids = yt_client.fetch_playlist_videos(
+                recommendations_playlist, 100
+            )
+
+            recommendations = self.select_recommended_videos(
+                result_vids_by_topic,
+                prev_recommended_vids,
+                self.settings.num_recommendations
+            )
+
+            yt_client.add_videos_to_playlist(
+                recommendations,
+                recommendations_playlist,
+            )
+
+            yt_client.delete_videos_from_playlist(
+                prev_recommended_vids,
+                5 * self.settings.num_recommendations,
+            )
+        except Exception:
+            self.logger.exception("Recommendation Workflow failed!")
+            raise
 
     def create_topic_buckets(
         self, videos: List[VideoDict], video_titles_by_topic: VideoTopics
@@ -173,15 +220,14 @@ class YoutubeVideosRecommender:
         self,
         video_pool_by_topic: Dict[TopicName, List[VideoDict]],
         tabu_list: List[VideoDict],
-        max_recommendations: int,
-        logger: Logger,
+        max_recommendations: int
     ) -> List[VideoDict]:
         topic_count = len(video_pool_by_topic)
         if topic_count == 0:
-            logger.warning("Cannot select recommendations, no topics found!")
+            self.logger.warning("Cannot select recommendations, no topics found!")
             return []
 
-        logger.info(f"Selecting {topic_count} videos from each topic.")
+        self.logger.info(f"Selecting {topic_count} videos from each topic.")
 
         filtered_video_pool = self.filter_recommended_videos(
             video_pool_by_topic, tabu_list
@@ -196,7 +242,7 @@ class YoutubeVideosRecommender:
                 recommendations.extend(sampled_videos)
 
         random.shuffle(recommendations)
-        logger.info(f"Selected {len(recommendations)} recommendations.")
+        self.logger.info(f"Selected {len(recommendations)} recommendations.")
 
         return recommendations
 
@@ -242,10 +288,9 @@ class YoutubeVideosRecommender:
         topic_buckets: Dict[TopicName, List[VideoDict]],
         topic_sample_size: int,
         video_sample_size: int,
-        logger: Logger,
     ) -> Dict[str, List[Dict]]:
         sampled_topics = self.sample_video_topics(topic_buckets, topic_sample_size)
-        logger.debug(f"Sampled topics: {sampled_topics}")
+        self.logger.debug(f"Sampled topics: {sampled_topics}")
 
         return {
             topic: self.sample_videos(topic_buckets[topic], video_sample_size)
@@ -273,7 +318,6 @@ class YoutubeVideosRecommender:
         self,
         query_by_topic: Dict[TopicName, SearchQuery],
         yt_client: YouTubeClient,
-        logger: Logger,
         settings: RecommenderSettings = None,
     ) -> Dict[TopicName, List[VideoDict]]:
         max_results = settings.num_yt_search_results if settings else 10

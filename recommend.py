@@ -15,7 +15,6 @@ from llm_client import (
 )
 
 from youtube_videos_recommender import YoutubeVideosRecommender, RecommenderSettings
-from topic_based_recommender import TopicBasedRecommender
 
 
 # ------------------------ OAuth configuration ------------------------
@@ -39,10 +38,9 @@ def main() -> None:
 
     youtube_client, llm_client = create_clients(logger)
 
-    workflow = TopicBasedRecommender()
-    recommender = YoutubeVideosRecommender(workflow, settings, logger)
+    recommender = YoutubeVideosRecommender(settings, logger)
 
-    recommender.run(youtube_client, llm_client)
+    recommender.recommend(youtube_client, llm_client)
 
     # Finalizing
     run_time_secs = perf_counter() - clock_start
@@ -77,13 +75,14 @@ def create_logger():
     else:
         log_level = logging.INFO
 
-    rich_handler = RichHandler(show_time=False, show_path=False, rich_tracebacks=True)
+    rich_handler = RichHandler(show_time=False, show_path=False, rich_tracebacks=True, markup=True)
     logging.basicConfig(
         level=log_level,
         encoding="utf8",
         format="%(asctime)s[%(levelname)s]: %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[rich_handler],
+        force=True
     )
 
     return logger

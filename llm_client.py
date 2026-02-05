@@ -125,7 +125,7 @@ class LlmClient:
             str: Generated search query (3-5 words)
         """
         self.logger.info(
-            f"Started generating a YT search query for topic {topic} (using {len(sampled_videos)} videos)..."
+            f"Started generating a YT search query for topic '{topic}' (using {len(sampled_videos)} videos)..."
         )
 
         prompt_videos = [
