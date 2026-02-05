@@ -5,10 +5,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from youtube_client import YouTubeClient
     from llm_client import LlmClient
-    from YoutubeVideosRecommender import YoutubeVideosRecommender
+    from youtube_videos_recommender import YoutubeVideosRecommender
 
 
 class RecommendationWorkflow(ABC):
+    """Abstract base for recommendation workflows."""
+
     @abstractmethod
     def run(
         self,

@@ -14,8 +14,8 @@ from llm_client import (
     YtVideoRecommenderLlmConfig,
 )
 
-from YoutubeVideosRecommender import YoutubeVideosRecommender, RecommenderSettings
-from TopicBasedRecommender import TopicBasedRecommender
+from youtube_videos_recommender import YoutubeVideosRecommender, RecommenderSettings
+from topic_based_recommender import TopicBasedRecommender
 
 
 # ------------------------ OAuth configuration ------------------------
@@ -40,9 +40,9 @@ def main() -> None:
     youtube_client, llm_client = create_clients(logger)
 
     workflow = TopicBasedRecommender()
-    recommender = YoutubeVideosRecommender(workflow)
+    recommender = YoutubeVideosRecommender(workflow, settings, logger)
 
-    recommender.run(youtube_client, llm_client, settings, logger)
+    recommender.run(youtube_client, llm_client)
 
     # Finalizing
     run_time_secs = perf_counter() - clock_start

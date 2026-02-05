@@ -1,13 +1,13 @@
 import random
 from logging import Logger
 from time import sleep
-from typing import Dict, List, Sequence, Set, Tuple, Any
+from typing import Dict, List, Sequence, Set
 
 from tqdm import tqdm
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
-from RecommendationWorkflow import RecommendationWorkflow
+from recommendation_workflow import RecommendationWorkflow
 from youtube_client import YouTubeClient
 from llm_client import LlmClient
 from models import VideoTopics
@@ -40,7 +40,7 @@ class RecommenderSettings(BaseSettings):
     )
 
     num_recommendations: int = Field(
-        default=10,
+        default=5,
         gt=1,
         lt=50,
         title="The maximum number of videos to recommend per run. NB. Inserting a video a playlist costs 50 pts.",
@@ -56,7 +56,7 @@ class RecommenderSettings(BaseSettings):
         return self
 
     num_liked_videos: int = Field(
-        default=200,
+        default=20,
         gt=1,
         lt=500000,
         title="The maximum number of liked videos to pull from YT. Used to make recommendations.",
@@ -105,17 +105,18 @@ class RecommenderSettings(BaseSettings):
 
 
 class YoutubeVideosRecommender:
-    def __init__(self, workflow: RecommendationWorkflow):
-        self.workflow = workflow
-
-    def run(
+    def __init__(
         self,
-        yt_client: YouTubeClient,
-        llm_client: LlmClient,
+        workflow: RecommendationWorkflow,
         settings: RecommenderSettings,
         logger: Logger,
-    ) -> None:
-        self.workflow.run(yt_client, llm_client, settings, logger, self)
+    ):
+        self.workflow = workflow
+        self.settings = settings
+        self.logger = logger
+
+    def run(self, yt_client: YouTubeClient, llm_client: LlmClient) -> None:
+        self.workflow.run(yt_client, llm_client, self.settings, self.logger, self)
 
     def create_topic_buckets(
         self, videos: List[VideoDict], video_titles_by_topic: VideoTopics
@@ -187,7 +188,7 @@ class YoutubeVideosRecommender:
         )
         count_by_topic = max(1, max_recommendations // topic_count)
         recommendations: List[VideoDict] = []
-        for topic, videos in filtered_video_pool.items():
+        for _, videos in filtered_video_pool.items():
             if len(videos) < count_by_topic:
                 recommendations.extend(videos)
             else:
@@ -200,7 +201,9 @@ class YoutubeVideosRecommender:
         return recommendations
 
     def filter_recommended_videos(
-        self, videos_by_topic: Dict[TopicName, List[VideoDict]], tabu_list: Sequence[VideoDict]
+        self,
+        videos_by_topic: Dict[TopicName, List[VideoDict]],
+        tabu_list: Sequence[VideoDict],
     ) -> Dict[TopicName, List[VideoDict]]:
         """Return a copy of `videos_by_topic` with videos from tabu channels removed."""
         tabu_channels = set()
@@ -278,7 +281,9 @@ class YoutubeVideosRecommender:
         for topic, query in tqdm(
             query_by_topic.items(), desc="Searching topics", disable=False
         ):
-            search_results[topic] = yt_client.search_videos(query, max_results=max_results)
+            search_results[topic] = yt_client.search_videos(
+                query, max_results=max_results
+            )
             sleep(1)
 
         return search_results

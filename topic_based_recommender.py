@@ -3,12 +3,12 @@ import random
 from logging import Logger
 from typing import TYPE_CHECKING
 
-from RecommendationWorkflow import RecommendationWorkflow
+from recommendation_workflow import RecommendationWorkflow
 
 if TYPE_CHECKING:
     from youtube_client import YouTubeClient
     from llm_client import LlmClient
-    from YoutubeVideosRecommender import YoutubeVideosRecommender
+    from youtube_videos_recommender import YoutubeVideosRecommender
 
 
 class TopicBasedRecommender(RecommendationWorkflow):
